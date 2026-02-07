@@ -1,0 +1,184 @@
+services:
+  # -------------------------
+  # MQTT Broker: HiveMQ CE
+  # -------------------------
+  hivemq:
+    image: hivemq/hivemq-ce:latest
+    container_name: hivemq
+    restart: unless-stopped
+    ports:
+      - "1883:1883"     # MQTT
+      - "8080:8080"     # HiveMQ Control Center (web)
+    environment:
+      - HIVEMQ_LOG_LEVEL=INFO
+    deploy:
+      resources:
+        limits:
+          memory: 384m
+
+  # -------------------------
+  # Kafka (KRaft)
+  # -------------------------
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    restart: unless-stopped
+    ports:
+      - "9092:29092"
+    volumes:
+      - kafkadata:/var/lib/kafka/data
+    environment:
+      CLUSTER_ID: "Lc4Q6Up5TNaVxbfsXCvojA"
+      KAFKA_CLUSTER_ID: "Lc4Q6Up5TNaVxbfsXCvojA"
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_LISTENERS: "PLAINTEXT://kafka:9092,CONTROLLER://kafka:9093,PLAINTEXT_HOST://0.0.0.0:29092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_HEAP_OPTS: "-Xms1g -Xmx1g"
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+  # -------------------------
+  # Postgres
+  # -------------------------
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  # -------------------------
+  # Grafana
+  # -------------------------
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - postgres
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  # -------------------------
+  # MQTT -> Kafka Bridge
+  # -------------------------
+  mqtt_kafka_bridge:
+    build: ./bridge
+    container_name: mqtt_kafka_bridge
+    restart: unless-stopped
+    depends_on:
+      - hivemq
+      - kafka
+    environment:
+      MQTT_HOST: hivemq
+      MQTT_PORT: "1883"
+      KAFKA_BOOTSTRAP: kafka:9092
+
+      # Mapeo MQTT -> Kafka (usa 3 topics por velocidad)
+      MAP_FAST: "planta1/turbina1/fast=scada.turbina1.fast"
+      MAP_MEDIUM: "planta1/turbina1/medium=scada.turbina1.medium"
+      MAP_SLOW: "planta1/turbina1/slow=scada.turbina1.slow"
+      MAP_ALL: "planta1/turbina1/all=scada.turbina1.all"
+      # Alias si publicas sin el "1" (ej: desde el teléfono)
+      MAP_ALL_ALT: "planta1/turbina/all=scada.turbina1.all"
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  # -------------------------
+  # Flink JobManager
+  # -------------------------
+  jobmanager:
+    build: ./flink
+    image: eczachly-pyflink
+    pull_policy: never
+    container_name: jobmanager
+    hostname: jobmanager
+    platform: linux/amd64
+    env_file:
+      - flink-env.env
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./flink:/opt/flink/usrlib
+      - ./flink/src:/opt/src
+    command: jobmanager
+    environment:
+      - POSTGRES_URL=jdbc:postgresql://postgres:5432/postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        jobmanager.memory.process.size: 1024m
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  # -------------------------
+  # Flink TaskManager
+  # -------------------------
+  taskmanager:
+    image: eczachly-pyflink
+    pull_policy: never
+    container_name: taskmanager
+    platform: linux/amd64
+    env_file:
+      - flink-env.env
+    restart: unless-stopped
+    volumes:
+      - ./flink:/opt/flink/usrlib
+      - ./flink/src:/opt/src
+    depends_on:
+      - jobmanager
+    command: taskmanager --taskmanager.registration.timeout 5 min
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 2
+        parallelism.default: 1
+        taskmanager.memory.process.size: 2048m
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+volumes:
+  pgdata:
+  kafkadata:
+  grafana_data:

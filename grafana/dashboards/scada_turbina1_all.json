@@ -1,0 +1,343 @@
+{
+  "id": null,
+  "uid": "scada-turbina1-all",
+  "title": "SCADA Turbina1 (All) - Postgres",
+  "tags": ["scada", "turbina1", "mqtt", "kafka", "flink"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 5,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "type": "query",
+        "name": "asset",
+        "label": "Asset",
+        "datasource": { "type": "postgres", "uid": "postgres" },
+        "refresh": 1,
+        "hide": 0,
+        "includeAll": true,
+        "allValue": "%",
+        "multi": false,
+        "options": [],
+        "query": "SELECT DISTINCT asset FROM scada_turbina1_all ORDER BY 1",
+        "current": { "text": "All", "value": "%" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Vibración LO (mm/s RMS)",
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "lengthmm",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 2.8 },
+              { "color": "red", "value": 4.5 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal" },
+      "targets": [
+        {
+          "refId": "A",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT vib_lo FROM scada_turbina1_all WHERE $__timeFilter(ts) AND asset LIKE '$asset' ORDER BY ts DESC LIMIT 1"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Vibración LA (mm/s RMS)",
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "lengthmm",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 2.8 },
+              { "color": "red", "value": 4.5 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal" },
+      "targets": [
+        {
+          "refId": "A",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT vib_la FROM scada_turbina1_all WHERE $__timeFilter(ts) AND asset LIKE '$asset' ORDER BY ts DESC LIMIT 1"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Presión turbina (bar)",
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": { "defaults": { "unit": "pressurebar", "decimals": 2 }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal" },
+      "targets": [
+        {
+          "refId": "A",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT pres_turbina FROM scada_turbina1_all WHERE $__timeFilter(ts) AND asset LIKE '$asset' ORDER BY ts DESC LIMIT 1"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "ΔT aire (°C)",
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": { "defaults": { "unit": "celsius", "decimals": 1 }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal" },
+      "targets": [
+        {
+          "refId": "A",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT deltaT_aire FROM scada_turbina1_all WHERE $__timeFilter(ts) AND asset LIKE '$asset' ORDER BY ts DESC LIMIT 1"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Dev Avg (°C)",
+      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 105 },
+              { "color": "red", "value": 120 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal" },
+      "targets": [
+        {
+          "refId": "A",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT dev_avg FROM scada_turbina1_all WHERE $__timeFilter(ts) AND asset LIKE '$asset' ORDER BY ts DESC LIMIT 1"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Anomaly score",
+      "gridPos": { "x": 20, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.3 },
+              { "color": "red", "value": 0.6 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "orientation": "horizontal" },
+      "targets": [
+        {
+          "refId": "A",
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT anomaly_score FROM scada_turbina1_all WHERE $__timeFilter(ts) AND asset LIKE '$asset' ORDER BY ts DESC LIMIT 1"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Vibraciones (mm/s RMS)",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": { "defaults": { "unit": "lengthmm", "decimals": 2 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT ts AS \"time\", vib_lo AS \"vib_lo\", vib_la AS \"vib_la\" FROM scada_turbina1_all WHERE $__timeFilter(ts) AND asset LIKE '$asset' ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Presiones (bar)",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": { "defaults": { "unit": "pressurebar", "decimals": 2 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT ts AS \"time\", pres_turbina AS \"pres_turbina\", pres_tuberia AS \"pres_tuberia\" FROM scada_turbina1_all WHERE $__timeFilter(ts) AND asset LIKE '$asset' ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Cojinetes y rodamientos (°C)",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 9 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 70 },
+              { "color": "red", "value": 85 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT ts AS \"time\", coj_radial_lo AS \"coj_radial_lo\", coj_radial_la AS \"coj_radial_la\", rod_empuje AS \"rod_empuje\", rod_guia AS \"rod_guia\" FROM scada_turbina1_all WHERE $__timeFilter(ts) AND asset LIKE '$asset' ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Devanados estator por fase (°C)",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 9 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 105 },
+              { "color": "red", "value": 120 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT ts AS \"time\", dev_u1 AS \"dev_u1\", dev_u2 AS \"dev_u2\", dev_v1 AS \"dev_v1\", dev_v2 AS \"dev_v2\", dev_w1 AS \"dev_w1\", dev_w2 AS \"dev_w2\" FROM scada_turbina1_all WHERE $__timeFilter(ts) AND asset LIKE '$asset' ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Enfriamiento (°C) y ΔT",
+      "gridPos": { "x": 0, "y": 21, "w": 24, "h": 9 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": { "defaults": { "unit": "celsius", "decimals": 1 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT ts AS \"time\", aire_frio AS \"aire_frio\", aire_caliente AS \"aire_caliente\", deltaT_aire AS \"deltaT_aire\" FROM scada_turbina1_all WHERE $__timeFilter(ts) AND asset LIKE '$asset' ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Dev Avg (°C)",
+      "gridPos": { "x": 0, "y": 30, "w": 12, "h": 8 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": { "defaults": { "unit": "celsius", "decimals": 1 }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT ts AS \"time\", dev_avg AS \"dev_avg\" FROM scada_turbina1_all WHERE $__timeFilter(ts) AND asset LIKE '$asset' ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Anomaly score (0–1)",
+      "gridPos": { "x": 12, "y": 30, "w": 12, "h": 8 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.3 },
+              { "color": "red", "value": 0.6 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawQuery": true,
+          "format": "time_series",
+          "rawSql": "SELECT ts AS \"time\", anomaly_score AS \"anomaly_score\" FROM scada_turbina1_all WHERE $__timeFilter(ts) AND asset LIKE '$asset' ORDER BY 1"
+        }
+      ]
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  }
+}
