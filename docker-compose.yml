@@ -76,7 +76,7 @@ services:
     container_name: grafana
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "3001:3000"
     volumes:
       - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
       - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
@@ -88,6 +88,26 @@ services:
       resources:
         limits:
           memory: 512m
+
+  # -------------------------
+  # Turbine G1 MQTT Simulator
+  # -------------------------
+  simulator:
+    build: ./simulator
+    container_name: simulator
+    restart: unless-stopped
+    depends_on:
+      - hivemq
+    environment:
+      MQTT_HOST: hivemq
+      MQTT_PORT: "1883"
+      TOPIC: "planta1/turbina/all"
+      ASSET: "turbina1"
+      PUBLISH_INTERVAL: "60"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
 
   # -------------------------
   # MQTT -> Kafka Bridge
