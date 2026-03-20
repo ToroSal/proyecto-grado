@@ -1,232 +1,208 @@
+"""
+PyFlink job — SCADA Turbina (Kafka -> enrich -> PostgreSQL/print).
+
+Usa DataStream API con SCADAEnricher (MapFunction) para:
+  - Capa 1: sub-scores por dimension (umbrales)
+  - Capa 2: Isolation Forest (modelo offline)
+"""
+from __future__ import annotations
+
+import json
+import logging
 import os
+import sys
 
-from pyflink.table import EnvironmentSettings, TableEnvironment
+# Asegurar que /opt/src esta en el path para imports de ml.*
+sys.path.insert(0, "/opt/src")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from pyflink.common import Types
+from pyflink.datastream import StreamExecutionEnvironment
+from pyflink.datastream.functions import MapFunction
+from pyflink.table import StreamTableEnvironment
+
+from ml.scada_enricher import SCADAEnricher
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
-def env(name: str, default: str) -> str:
+# ===================================================================
+# Configuracion (env vars)
+# ===================================================================
+def _env(name, default):
+    # type: (str, str) -> str
     value = os.getenv(name)
     return value if value not in (None, "") else default
 
 
-KAFKA_BOOTSTRAP = env("KAFKA_BOOTSTRAP", "kafka:9092")
-KAFKA_TOPIC = env("KAFKA_TOPIC", "scada.turbina1.all")
-KAFKA_GROUP_ID = env("KAFKA_GROUP_ID", "pyflink-scada")
-KAFKA_STARTUP_MODE = env("KAFKA_STARTUP_MODE", "latest-offset")  # earliest-offset|latest-offset|group-offsets
+KAFKA_BOOTSTRAP = _env("KAFKA_BOOTSTRAP", "kafka:9092")
+KAFKA_TOPIC = _env("KAFKA_TOPIC", "scada.turbina1.all")
+KAFKA_GROUP_ID = _env("KAFKA_GROUP_ID", "pyflink-scada")
+KAFKA_STARTUP_MODE = _env("KAFKA_STARTUP_MODE", "latest-offset")
 
-POSTGRES_URL = env("POSTGRES_URL", "jdbc:postgresql://postgres:5432/postgres")
-POSTGRES_USER = env("POSTGRES_USER", "postgres")
-POSTGRES_PASSWORD = env("POSTGRES_PASSWORD", "postgres")
-POSTGRES_TABLE = env("POSTGRES_TABLE", "scada_turbina1_all")
+POSTGRES_URL = _env("POSTGRES_URL", "jdbc:postgresql://postgres:5432/postgres")
+POSTGRES_USER = _env("POSTGRES_USER", "postgres")
+POSTGRES_PASSWORD = _env("POSTGRES_PASSWORD", "postgres")
+POSTGRES_TABLE = _env("POSTGRES_TABLE", "scada_turbina1_all")
 
-SINK_MODE = env("SINK_MODE", "print")  # print|jdbc|both
-TIME_MODE = env("TIME_MODE", "ingest")  # ingest|payload
-
-TS_EXPR = "ts_ingest" if TIME_MODE == "ingest" else "ts_payload"
-
-# Thresholds (defaults based on typical ops; tune via env vars)
-VIB_WARN = float(env("VIB_WARN", "2.8"))  # mm/s RMS
-VIB_ALARM = float(env("VIB_ALARM", "4.5"))
-BEARING_WARN = float(env("BEARING_WARN", "70"))  # °C
-BEARING_ALARM = float(env("BEARING_ALARM", "85"))
-WINDING_WARN = float(env("WINDING_WARN", "105"))  # °C
-WINDING_ALARM = float(env("WINDING_ALARM", "120"))
-DELTA_T_WARN = float(env("DELTA_T_WARN", "15"))  # °C (aire_caliente - aire_frio)
-DELTA_T_ALARM = float(env("DELTA_T_ALARM", "25"))
-PRES_DIFF_WARN = float(env("PRES_DIFF_WARN", "3"))  # bar (|pres_turbina - pres_tuberia|)
-PRES_DIFF_ALARM = float(env("PRES_DIFF_ALARM", "6"))
-
-SELECT_COLUMNS = (
-    f"{TS_EXPR} AS ts, asset, vib_lo, vib_la, pres_turbina, pres_tuberia, "
-    "coj_radial_lo, coj_radial_la, rod_empuje, rod_guia, "
-    "dev_u1, dev_u2, dev_v1, dev_v2, dev_w1, dev_w2, "
-    "aire_frio, aire_caliente, deltaT_aire, dev_avg, anomaly_score"
-)
+SINK_MODE = _env("SINK_MODE", "print")   # print | jdbc | both
+TIME_MODE = _env("TIME_MODE", "ingest")  # ingest | payload
 
 
+# ===================================================================
+# Helpers
+# ===================================================================
+class _ExtractString(MapFunction):
+    """Extrae el string de un Row (resultado de to_data_stream)."""
+    def map(self, value):
+        return str(value[0]) if value[0] is not None else "{}"
+
+
+# ===================================================================
+# PostgresSinkFunction — escribe registros JSON a Postgres via psycopg2
+# ===================================================================
+_PG_COLUMNS = [
+    "ts", "asset",
+    "vib_lo", "vib_la", "pres_turbina", "pres_tuberia",
+    "coj_radial_lo", "coj_radial_la", "rod_empuje", "rod_guia",
+    "dev_u1", "dev_u2", "dev_v1", "dev_v2", "dev_w1", "dev_w2",
+    "aire_frio", "aire_caliente",
+    "deltaT_aire", "dev_avg", "anomaly_score",
+    "score_vib", "score_bearing", "score_winding",
+    "score_cooling", "score_lubrication",
+    "if_score", "if_anomaly",
+]
+
+
+class PostgresWriterMap(MapFunction):
+    """
+    MapFunction que escribe a PostgreSQL via psycopg2 y retorna el JSON sin
+    modificar. En PyFlink 1.16, SinkFunction es un wrapper Java — los sinks
+    Python custom se implementan como MapFunction con efecto colateral.
+    """
+
+    def __init__(self, jdbc_url, user, password, table):
+        # type: (str, str, str, str) -> None
+        self._jdbc_url = jdbc_url
+        self._user = user
+        self._password = password
+        self._table = table
+        self._conn = None
+        self._insert_sql = None
+
+    def open(self, runtime_context):
+        import psycopg2
+
+        # Parsear JDBC URL: jdbc:postgresql://host:port/db
+        url = self._jdbc_url.replace("jdbc:postgresql://", "")
+        host_port, db = url.split("/", 1)
+        if ":" in host_port:
+            host, port = host_port.split(":")
+        else:
+            host, port = host_port, "5432"
+
+        self._conn = psycopg2.connect(
+            host=host,
+            port=int(port),
+            dbname=db,
+            user=self._user,
+            password=self._password,
+        )
+        self._conn.autocommit = True
+
+        cols = ", ".join(_PG_COLUMNS)
+        placeholders = ", ".join(["%s"] * len(_PG_COLUMNS))
+        self._insert_sql = "INSERT INTO %s (%s) VALUES (%s)" % (
+            self._table, cols, placeholders
+        )
+        logger.info("PostgresWriterMap abierto — tabla=%s", self._table)
+
+    def map(self, value):
+        # type: (str) -> str
+        try:
+            row = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("PostgresWriterMap: JSON invalido, descartando")
+            return value
+
+        values = [row.get(col) for col in _PG_COLUMNS]
+
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(self._insert_sql, values)
+            cursor.close()
+        except Exception:
+            logger.exception("PostgresWriterMap: error insertando fila")
+
+        return value
+
+    def close(self):
+        if self._conn and not self._conn.closed:
+            self._conn.close()
+            logger.info("PostgresWriterMap cerrado")
+
+
+# ===================================================================
+# Main
+# ===================================================================
 def main():
-    settings = EnvironmentSettings.in_streaming_mode()
-    table_env = TableEnvironment.create(settings)
+    env = StreamExecutionEnvironment.get_execution_environment()
+    t_env = StreamTableEnvironment.create(env)
 
-    table_env.execute_sql(
-        f"""
-        CREATE TABLE scada_source (
-          ts STRING,
-          ts_payload AS COALESCE(
-            TO_TIMESTAMP(REPLACE(ts, 'Z', ''), 'yyyy-MM-dd''T''HH:mm:ss.SSS'),
-            TO_TIMESTAMP(REPLACE(ts, 'Z', ''), 'yyyy-MM-dd''T''HH:mm:ss')
-          ),
-          ts_ingest AS LOCALTIMESTAMP,
-          asset STRING,
-          vib_lo DOUBLE,
-          vib_la DOUBLE,
-          pres_turbina DOUBLE,
-          pres_tuberia DOUBLE,
-          coj_radial_lo DOUBLE,
-          coj_radial_la DOUBLE,
-          rod_empuje DOUBLE,
-          rod_guia DOUBLE,
-          dev_u1 DOUBLE,
-          dev_u2 DOUBLE,
-          dev_v1 DOUBLE,
-          dev_v2 DOUBLE,
-          dev_w1 DOUBLE,
-          dev_w2 DOUBLE,
-          aire_frio DOUBLE,
-          aire_caliente DOUBLE,
-          deltaT_aire AS (aire_caliente - aire_frio),
-          dev_avg AS (
-            (
-              COALESCE(dev_u1, 0) + COALESCE(dev_u2, 0) +
-              COALESCE(dev_v1, 0) + COALESCE(dev_v2, 0) +
-              COALESCE(dev_w1, 0) + COALESCE(dev_w2, 0)
-            ) / NULLIF(
-              (CASE WHEN dev_u1 IS NULL THEN 0 ELSE 1 END) +
-              (CASE WHEN dev_u2 IS NULL THEN 0 ELSE 1 END) +
-              (CASE WHEN dev_v1 IS NULL THEN 0 ELSE 1 END) +
-              (CASE WHEN dev_v2 IS NULL THEN 0 ELSE 1 END) +
-              (CASE WHEN dev_w1 IS NULL THEN 0 ELSE 1 END) +
-              (CASE WHEN dev_w2 IS NULL THEN 0 ELSE 1 END),
-              0
-            )
-          ),
-          anomaly_score AS (
-            (
-              -- Vib score
-              LEAST(
-                1.0,
-                GREATEST(
-                  0.0,
-                  (GREATEST(COALESCE(vib_lo, 0), COALESCE(vib_la, 0)) - {VIB_WARN}) / ({VIB_ALARM} - {VIB_WARN})
-                )
-              )
-              +
-              -- Bearing score
-              LEAST(
-                1.0,
-                GREATEST(
-                  0.0,
-                  (GREATEST(COALESCE(coj_radial_lo, 0), COALESCE(coj_radial_la, 0), COALESCE(rod_empuje, 0), COALESCE(rod_guia, 0)) - {BEARING_WARN}) / ({BEARING_ALARM} - {BEARING_WARN})
-                )
-              )
-              +
-              -- Winding score
-              LEAST(
-                1.0,
-                GREATEST(
-                  0.0,
-                  (GREATEST(COALESCE(dev_u1, 0), COALESCE(dev_u2, 0), COALESCE(dev_v1, 0), COALESCE(dev_v2, 0), COALESCE(dev_w1, 0), COALESCE(dev_w2, 0)) - {WINDING_WARN}) / ({WINDING_ALARM} - {WINDING_WARN})
-                )
-              )
-              +
-              -- Cooling score (deltaT)
-              LEAST(
-                1.0,
-                GREATEST(
-                  0.0,
-                  (COALESCE(aire_caliente - aire_frio, 0) - {DELTA_T_WARN}) / ({DELTA_T_ALARM} - {DELTA_T_WARN})
-                )
-              )
-              +
-              -- Pressure differential score
-              LEAST(
-                1.0,
-                GREATEST(
-                  0.0,
-                  (ABS(COALESCE(pres_turbina, 0) - COALESCE(pres_tuberia, 0)) - {PRES_DIFF_WARN}) / ({PRES_DIFF_ALARM} - {PRES_DIFF_WARN})
-                )
-              )
-            ) / 5.0
-          )
+    # --- Kafka source (formato raw -> un solo campo STRING) ---
+    t_env.execute_sql(
+        """
+        CREATE TABLE kafka_raw (
+            `value` STRING
         ) WITH (
-          'connector' = 'kafka',
-          'topic' = '{KAFKA_TOPIC}',
-          'properties.bootstrap.servers' = '{KAFKA_BOOTSTRAP}',
-          'properties.group.id' = '{KAFKA_GROUP_ID}',
-          'scan.startup.mode' = '{KAFKA_STARTUP_MODE}',
-          'format' = 'json',
-          'json.ignore-parse-errors' = 'true',
-          'json.timestamp-format.standard' = 'ISO-8601'
+            'connector' = 'kafka',
+            'topic' = '%s',
+            'properties.bootstrap.servers' = '%s',
+            'properties.group.id' = '%s',
+            'scan.startup.mode' = '%s',
+            'format' = 'raw'
         )
         """
+        % (KAFKA_TOPIC, KAFKA_BOOTSTRAP, KAFKA_GROUP_ID, KAFKA_STARTUP_MODE)
     )
 
-    statement_set = table_env.create_statement_set()
+    # --- Table -> DataStream<Row> -> DataStream<String> ---
+    raw_table = t_env.from_path("kafka_raw")
+    raw_ds = t_env.to_data_stream(raw_table)
 
-    if SINK_MODE in ("print", "both"):
-        table_env.execute_sql(
-            """
-            CREATE TABLE scada_print (
-              ts TIMESTAMP(3),
-              asset STRING,
-              vib_lo DOUBLE,
-              vib_la DOUBLE,
-              pres_turbina DOUBLE,
-              pres_tuberia DOUBLE,
-              coj_radial_lo DOUBLE,
-              coj_radial_la DOUBLE,
-              rod_empuje DOUBLE,
-              rod_guia DOUBLE,
-              dev_u1 DOUBLE,
-              dev_u2 DOUBLE,
-              dev_v1 DOUBLE,
-              dev_v2 DOUBLE,
-              dev_w1 DOUBLE,
-              dev_w2 DOUBLE,
-              aire_frio DOUBLE,
-              aire_caliente DOUBLE,
-              deltaT_aire DOUBLE,
-              dev_avg DOUBLE,
-              anomaly_score DOUBLE
-            ) WITH (
-              'connector' = 'print'
-            )
-            """
-        )
-        statement_set.add_insert_sql(
-            f"INSERT INTO scada_print SELECT {SELECT_COLUMNS} FROM scada_source"
-        )
+    json_ds = raw_ds.map(_ExtractString(), output_type=Types.STRING())
 
-    if SINK_MODE in ("jdbc", "both"):
-        table_env.execute_sql(
-            f"""
-            CREATE TABLE scada_pg (
-              ts TIMESTAMP(3),
-              asset STRING,
-              vib_lo DOUBLE,
-              vib_la DOUBLE,
-              pres_turbina DOUBLE,
-              pres_tuberia DOUBLE,
-              coj_radial_lo DOUBLE,
-              coj_radial_la DOUBLE,
-              rod_empuje DOUBLE,
-              rod_guia DOUBLE,
-              dev_u1 DOUBLE,
-              dev_u2 DOUBLE,
-              dev_v1 DOUBLE,
-              dev_v2 DOUBLE,
-              dev_w1 DOUBLE,
-              dev_w2 DOUBLE,
-              aire_frio DOUBLE,
-              aire_caliente DOUBLE,
-              deltaT_aire DOUBLE,
-              dev_avg DOUBLE,
-              anomaly_score DOUBLE
-            ) WITH (
-              'connector' = 'jdbc',
-              'url' = '{POSTGRES_URL}',
-              'table-name' = '{POSTGRES_TABLE}',
-              'username' = '{POSTGRES_USER}',
-              'password' = '{POSTGRES_PASSWORD}',
-              'sink.buffer-flush.max-rows' = '1',
-              'sink.buffer-flush.interval' = '0s'
-            )
-            """
-        )
-        statement_set.add_insert_sql(
-            f"INSERT INTO scada_pg SELECT {SELECT_COLUMNS} FROM scada_source"
-        )
+    # --- Enrichment (Capa 1 + Capa 2) ---
+    enriched_ds = json_ds.map(SCADAEnricher(), output_type=Types.STRING())
 
-    statement_set.execute()
+    # --- Sinks ---
+    # En PyFlink 1.16 Python, los sinks custom son MapFunction con efecto
+    # colateral. Cada rama del DAG necesita un terminal (.print()).
+    if SINK_MODE == "print":
+        enriched_ds.print()
+
+    elif SINK_MODE == "jdbc":
+        pg_writer = PostgresWriterMap(
+            POSTGRES_URL, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_TABLE
+        )
+        # .print() actua como terminal del DAG; la escritura real ocurre en map()
+        enriched_ds.map(pg_writer, output_type=Types.STRING()).print()
+        logger.info("Sink: JDBC habilitado -> %s", POSTGRES_TABLE)
+
+    elif SINK_MODE == "both":
+        enriched_ds.print()
+        pg_writer = PostgresWriterMap(
+            POSTGRES_URL, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_TABLE
+        )
+        enriched_ds.map(pg_writer, output_type=Types.STRING()).print()
+        logger.info("Sink: print + JDBC habilitados")
+
+    logger.info(
+        "Iniciando job SCADA — topic=%s sink=%s time=%s",
+        KAFKA_TOPIC, SINK_MODE, TIME_MODE,
+    )
+    env.execute("SCADA Turbine Enrichment Job")
 
 
 if __name__ == "__main__":

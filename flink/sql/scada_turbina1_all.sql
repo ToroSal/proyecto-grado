@@ -19,7 +19,14 @@ CREATE TABLE IF NOT EXISTS scada_turbina1_all (
   aire_caliente DOUBLE PRECISION,
   deltaT_aire DOUBLE PRECISION,
   dev_avg DOUBLE PRECISION,
-  anomaly_score DOUBLE PRECISION
+  anomaly_score DOUBLE PRECISION,
+  score_vib DOUBLE PRECISION,
+  score_bearing DOUBLE PRECISION,
+  score_winding DOUBLE PRECISION,
+  score_cooling DOUBLE PRECISION,
+  score_lubrication DOUBLE PRECISION,
+  if_score DOUBLE PRECISION,
+  if_anomaly SMALLINT DEFAULT 0
 );
 
 -- Índices para queries típicas de Grafana (tiempo + filtro por asset)

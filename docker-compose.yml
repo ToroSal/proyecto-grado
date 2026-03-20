@@ -103,7 +103,7 @@ services:
       MQTT_PORT: "1883"
       TOPIC: "planta1/turbina/all"
       ASSET: "turbina1"
-      PUBLISH_INTERVAL: "60"
+      PUBLISH_INTERVAL: "10"
     deploy:
       resources:
         limits:
@@ -154,12 +154,15 @@ services:
     volumes:
       - ./flink:/opt/flink/usrlib
       - ./flink/src:/opt/src
+      - ./flink/artifacts:/opt/src/artifacts
     command: jobmanager
     environment:
       - POSTGRES_URL=jdbc:postgresql://postgres:5432/postgres
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
       - POSTGRES_DB=postgres
+      - PYTHONPATH=/opt/src
+      - ARTIFACTS_DIR=/opt/src/artifacts
       - |
         FLINK_PROPERTIES=
         jobmanager.rpc.address: jobmanager
@@ -183,10 +186,13 @@ services:
     volumes:
       - ./flink:/opt/flink/usrlib
       - ./flink/src:/opt/src
+      - ./flink/artifacts:/opt/src/artifacts
     depends_on:
       - jobmanager
     command: taskmanager --taskmanager.registration.timeout 5 min
     environment:
+      - PYTHONPATH=/opt/src
+      - ARTIFACTS_DIR=/opt/src/artifacts
       - |
         FLINK_PROPERTIES=
         jobmanager.rpc.address: jobmanager

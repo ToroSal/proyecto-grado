@@ -39,7 +39,7 @@ BROKER_HOST       = os.getenv("MQTT_HOST", "hivemq")
 BROKER_PORT       = int(os.getenv("MQTT_PORT", "1883"))
 TOPIC             = os.getenv("TOPIC", "planta1/turbina/all")
 ASSET             = os.getenv("ASSET", "turbina1")
-PUBLISH_INTERVAL  = int(os.getenv("PUBLISH_INTERVAL", "20"))
+PUBLISH_INTERVAL  = int(os.getenv("PUBLISH_INTERVAL", "5"))
 QOS               = 1
 RETAIN            = False
 
@@ -199,7 +199,7 @@ def main():
 
     client.loop_start()
 
-    print("\nPublicando cada 60 segundos. Presiona Ctrl+C para detener.\n", flush=True)
+    print(f"\nPublicando cada {PUBLISH_INTERVAL} segundos. Presiona Ctrl+C para detener.\n", flush=True)
     try:
         while True:
             payload = build_payload()
